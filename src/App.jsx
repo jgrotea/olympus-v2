@@ -345,11 +345,16 @@ function useAutoOracle(totalKcal, goal, totalProt, protGoal) {
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(false)
 
-  async function refresh() {
+  // Keep latest values in a ref so the async call always reads fresh data
+  const valuesRef = useRef({ totalKcal, goal, totalProt, protGoal })
+  useEffect(() => { valuesRef.current = { totalKcal, goal, totalProt, protGoal } })
+
+  async function call() {
     setLoading(true)
     try {
+      const { totalKcal: kcal, goal: g, totalProt: prot, protGoal: pg } = valuesRef.current
       const h = new Date().getHours()
-      const ctx = `Hora: ${h}:00h. Kcal: ${totalKcal}/${goal}. Balance: ${totalKcal - goal > 0 ? '+' : ''}${totalKcal - goal} kcal. Proteína: ${totalProt}g/${protGoal}g.`
+      const ctx = `Hora: ${h}:00h. Kcal: ${kcal}/${g}. Balance: ${kcal - g > 0 ? '+' : ''}${kcal - g} kcal. Proteína: ${prot}g/${pg}g.`
       const r = await callAI(
         [{ role: 'user', content: ctx }],
         'Coach de hipertrofia de élite. 2-3 líneas, español directo. Si <12h y 0 kcal: sugiere desayuno hipercalórico. Si >20h y faltan >500 kcal: urgencia. Si exceso: qué evitar. Si en rango: motiva.'
@@ -359,13 +364,18 @@ function useAutoOracle(totalKcal, goal, totalProt, protGoal) {
     setLoading(false)
   }
 
-  // Auto-load once on mount
-  const didMount = useRef(false)
-  useEffect(() => {
-    if (!didMount.current) { didMount.current = true; refresh() }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Fire on mount immediately
+  useEffect(() => { call() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { msg, loading, refresh }
+  // Debounce: re-fire 2 s after totalKcal changes (skip the very first render)
+  const isFirst = useRef(true)
+  useEffect(() => {
+    if (isFirst.current) { isFirst.current = false; return }
+    const t = setTimeout(() => call(), 2000)
+    return () => clearTimeout(t)
+  }, [totalKcal]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return { msg, loading }
 }
 
 // ─── TAB: HOY ─────────────────────────────────────────────────────────────────
@@ -380,7 +390,7 @@ function TabHoy({ profile, foods, water, setWater, activities, setActivities, we
   const calPct = goal > 0 ? Math.min(100, Math.round((totalKcal / goal) * 100)) : 0
   const waterPct = Math.min(100, Math.round((water / waterGoal) * 100))
 
-  const { msg: oracleMsg, loading: oracleLoading, refresh: consultOracle } = useAutoOracle(totalKcal, goal, totalProt, protGoal)
+  const { msg: oracleMsg, loading: oracleLoading } = useAutoOracle(totalKcal, goal, totalProt, protGoal)
 
   const [waterInput, setWaterInput] = useState('')
   const [weightInput, setWeightInput] = useState('')
@@ -450,10 +460,7 @@ function TabHoy({ profile, foods, water, setWater, activities, setActivities, we
                 </p>
             }
           </div>
-          <button onClick={consultOracle} disabled={oracleLoading}
-            style={{ width: '100%', background: 'none', border: '1px solid rgba(201,169,97,0.4)', borderRadius: 6, color: C.gold, padding: '9px 16px', fontFamily: 'Cinzel,serif', fontSize: 11, letterSpacing: 2, cursor: oracleLoading ? 'not-allowed' : 'pointer' }}>
-            {oracleLoading ? '...' : '↺ ACTUALIZAR MENSAJE'}
-          </button>
+          {/* message updates automatically — button removed */}
         </div>
         <MeanderSVG opacity={0.3} />
       </Panel>
