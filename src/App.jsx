@@ -344,6 +344,7 @@ function useSpeech(lang = 'es-CL') {
 function useAutoOracle(totalKcal, goal, totalProt, protGoal) {
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(false)
+
   async function refresh() {
     setLoading(true)
     try {
@@ -357,6 +358,13 @@ function useAutoOracle(totalKcal, goal, totalProt, protGoal) {
     } catch (e) { setMsg(`Error: ${e.message}`) }
     setLoading(false)
   }
+
+  // Auto-load once on mount
+  const didMount = useRef(false)
+  useEffect(() => {
+    if (!didMount.current) { didMount.current = true; refresh() }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   return { msg, loading, refresh }
 }
 
