@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useContext, createContext } from 'react'
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -14,6 +14,20 @@ const C = {
   red:    '#c0392b',
   green:  '#27ae60',
 }
+
+// Modo Obsidiana: negro puro, sin gradientes
+const CO = {
+  gold:   '#c9a961',
+  black:  '#030202',
+  marble: '#e8e2d4',
+  panel:  '#080706',
+  stone:  '#1a1714',
+  red:    '#c0392b',
+  green:  '#27ae60',
+}
+
+// ─── THEME CONTEXT ────────────────────────────────────────────────────────────
+const ThemeCtx = createContext(false) // false=normal, true=obsidiana
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
 const LS = {
@@ -82,6 +96,7 @@ const DEFAULT_PROFILE = {
   activityLevel: 1.725, useAnabolics: false,
   supplements: 'Magnesio, Creatina', injuries: '', sleepGoal: 8,
   objective: 'Hipertrofia máxima',
+  theme: 'normal',
 }
 
 // ─── ACTIVITY TYPES WITH MET ──────────────────────────────────────────────────
@@ -92,6 +107,97 @@ const ACTIVITY_TYPES = [
   { name: 'HIIT', met: 10 }, { name: 'Caminata', met: 4 }, { name: 'Otro', met: 6 },
 ]
 const calcKcalBurned = (met, kg, mins) => Math.round((met * kg * mins) / 60)
+
+// ─── PUSH NOTIFICATIONS ──────────────────────────────────────────────────────
+function showNotif(title, body) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+  const opts = { body, icon: '/olympus-icon.png', badge: '/olympus-icon.png', vibrate: [200, 100, 200] }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.ready
+      .then(reg => reg.showNotification(title, opts))
+      .catch(() => { try { new Notification(title, { body }) } catch {} })
+  } else {
+    try { new Notification(title, { body }) } catch {}
+  }
+}
+
+function setupNotificationScheduler() {
+  const SCHEDULE = [
+    { h: 9,  m: 0, key: 'weight', title: 'Registra tu peso de hoy ⚖',      body: 'Mide tu progreso cada mañana para un seguimiento exacto.' },
+    { h: 13, m: 0, key: 'lunch',  title: '¿Ya registraste tu almuerzo? 🍽', body: 'No olvides registrar tu alimentación del mediodía.' },
+    { h: 20, m: 0, key: 'close',  title: '¿Cerraste tu día calórico? 📊',   body: 'Revisa tu balance antes de terminar el día.' },
+  ]
+  return setInterval(() => {
+    const now = new Date()
+    const h = now.getHours(); const m = now.getMinutes(); const dk = today()
+    const shown = LS.get('oly2_notif_shown', {})
+    SCHEDULE.forEach(s => {
+      const nk = `${dk}_${s.key}`
+      if (h === s.h && m === s.m && !shown[nk]) {
+        showNotif(s.title, s.body)
+        LS.set('oly2_notif_shown', { ...shown, [nk]: true })
+      }
+    })
+  }, 30000)
+}
+
+// ─── STREAK ───────────────────────────────────────────────────────────────────
+function calcStreak() {
+  let streak = 0
+  for (let i = 0; i < 365; i++) {
+    const key = new Date(Date.now() - i * 86400000).toISOString().split('T')[0]
+    const foods = LS.get(`oly2_foods_${key}`, [])
+    if (foods.length === 0) break
+    streak++
+  }
+  return streak
+}
+
+function calcProtStreak(protGoal) {
+  let streak = 0
+  for (let i = 0; i < 365; i++) {
+    const key = new Date(Date.now() - i * 86400000).toISOString().split('T')[0]
+    const foods = LS.get(`oly2_foods_${key}`, [])
+    const prot = foods.reduce((s, f) => s + (f.protein || 0), 0)
+    if (prot < protGoal) break
+    streak++
+  }
+  return streak
+}
+
+// ─── LINEAR REGRESSION ───────────────────────────────────────────────────────
+function linearRegression(points) {
+  const n = points.length
+  if (n < 2) return null
+  const sumX = points.reduce((s, p) => s + p.x, 0)
+  const sumY = points.reduce((s, p) => s + p.y, 0)
+  const sumXY = points.reduce((s, p) => s + p.x * p.y, 0)
+  const sumXX = points.reduce((s, p) => s + p.x * p.x, 0)
+  const denom = n * sumXX - sumX * sumX
+  if (denom === 0) return null
+  const slope = (n * sumXY - sumX * sumY) / denom
+  const intercept = (sumY - slope * sumX) / n
+  return { slope, intercept } // slope en kg por índice de día
+}
+
+// ─── ACHIEVEMENTS ─────────────────────────────────────────────────────────────
+const ACHIEVEMENTS_DEF = [
+  { id: 'week1',      icon: '🏛', title: 'Primera Semana',  desc: '7 días consecutivos registrando' },
+  { id: 'prot7',      icon: '⚡', title: 'Heracles',         desc: 'Meta de proteína 7 días seguidos' },
+  { id: 'streak30',   icon: '🔱', title: 'Olympiano',        desc: '30 días de racha' },
+  { id: 'sess100',    icon: '🏆', title: 'Centurión',        desc: '100 sesiones registradas' },
+  { id: 'weight30',   icon: '⚖', title: 'Cuerpo de Dios',   desc: 'Peso registrado 30 días distintos' },
+]
+
+function evaluateAchievements({ streak, protStreak, sessionsCount, weightDaysCount }) {
+  return {
+    week1:    streak >= 7,
+    prot7:    protStreak >= 7,
+    streak30: streak >= 30,
+    sess100:  sessionsCount >= 100,
+    weight30: weightDaysCount >= 30,
+  }
+}
 
 // ─── SVG: MEANDER ────────────────────────────────────────────────────────────
 function MeanderSVG({ opacity = 0.35 }) {
@@ -252,12 +358,13 @@ function Bar2({ value, max, color = C.gold, height = 10 }) {
 }
 
 function Panel({ children, style = {} }) {
+  const obs = useContext(ThemeCtx)
   return (
     <div style={{
-      background: `linear-gradient(180deg, ${C.panel} 0%, #0a0908 100%)`,
+      background: obs ? CO.panel : `linear-gradient(180deg, ${C.panel} 0%, #0a0908 100%)`,
       borderRadius: 12, padding: 16, marginBottom: 12,
-      border: '1px solid rgba(201,169,97,0.2)',
-      boxShadow: '0 0 20px rgba(201,169,97,0.05)',
+      border: `1px solid rgba(201,169,97,${obs ? 0.15 : 0.2})`,
+      boxShadow: obs ? 'none' : '0 0 20px rgba(201,169,97,0.05)',
       ...style,
     }}>
       {children}
@@ -338,6 +445,34 @@ function useSpeech(lang = 'es-CL') {
   }
   function stop() { ref.current?.stop(); setListening(false) }
   return { listening, transcript, setTranscript, start, stop }
+}
+
+// ─── TOAST ACHIEVEMENT ───────────────────────────────────────────────────────
+function ToastAchievement({ achievement, onDone }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 4000)
+    return () => clearTimeout(t)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div style={{
+      position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+      zIndex: 9999, maxWidth: 340, width: '90%',
+      background: `linear-gradient(135deg, ${C.panel} 0%, #1a1500 100%)`,
+      border: `1px solid ${C.gold}`, borderRadius: 12,
+      padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 14,
+      boxShadow: `0 0 40px rgba(201,169,97,0.35)`,
+      animation: 'fadeSlideUp 0.4s ease',
+    }}>
+      <style>{`@keyframes fadeSlideUp{from{opacity:0;transform:translateX(-50%) translateY(20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
+      <span style={{ fontSize: 32 }}>{achievement.icon}</span>
+      <div>
+        <div style={{ fontFamily: 'Cinzel,serif', fontSize: 9, color: C.gold, letterSpacing: 2, marginBottom: 3 }}>LOGRO DESBLOQUEADO</div>
+        <div style={{ fontFamily: 'Cinzel,serif', fontSize: 13, color: C.marble, fontWeight: 700 }}>{achievement.title}</div>
+        <div style={{ fontFamily: '"Cormorant Garamond",serif', fontStyle: 'italic', fontSize: 13, color: '#aaa', marginTop: 2 }}>{achievement.desc}</div>
+      </div>
+    </div>
+  )
 }
 
 // ─── ORACLE AUTO-MESSAGE ──────────────────────────────────────────────────────
@@ -921,16 +1056,53 @@ function TabProgreso({ profile, foods: todayFoods, water: todayWater, weights, s
     const dayWater = isToday ? todayWater : LS.get(`oly2_water_${key}`, 0)
     return {
       day: d.toLocaleDateString('es-CL', { weekday: 'short' }),
-      key,
+      key, isToday,
       kcal: dayFoods.reduce((s, f) => s + (f.kcal || 0), 0),
       agua: parseFloat(((dayWater || 0) / 1000).toFixed(2)),
       peso: weights[key] || null,
     }
   })
 
-  const weightData = last7.filter(d => d.peso !== null).map(d => ({ day: d.day, peso: d.peso }))
   const kcalData = last7.map(d => ({ day: d.day, kcal: d.kcal }))
   const waterData = last7.map(d => ({ day: d.day, agua: d.agua }))
+
+  // 30-day weight data with trend
+  const last30Weight = Array.from({ length: 30 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - 29 + i)
+    const key = d.toISOString().split('T')[0]
+    const isToday = key === todayStr
+    return { x: i, day: d.getDate(), key, isToday, peso: weights[key] || null }
+  })
+  const weightPoints = last30Weight.filter(d => d.peso !== null)
+  const weightData30 = last30Weight.map(d => ({ day: d.day, peso: d.peso, isToday: d.isToday }))
+
+  // Linear regression for trend line
+  const regInput = weightPoints.map(d => ({ x: d.x, y: d.peso }))
+  const reg = linearRegression(regInput)
+  let trendLine = []
+  let trendLabel = null
+  let trendColor = C.gold
+  if (reg && weightPoints.length >= 3) {
+    trendLine = last30Weight.map(d => ({ day: d.day, trend: parseFloat((reg.slope * d.x + reg.intercept).toFixed(2)) }))
+    const slopePerWeek = reg.slope * 7
+    const abs = Math.abs(slopePerWeek).toFixed(2)
+    const dir = slopePerWeek < -0.05 ? 'bajando' : slopePerWeek > 0.05 ? 'subiendo' : 'estable'
+    const isGood = (
+      ['Definición / Cutting', 'Pre-competencia'].includes(profile.phase) ? slopePerWeek < 0 :
+      profile.phase === 'Volumen / Bulking' ? slopePerWeek > 0 : true
+    )
+    trendColor = dir === 'estable' ? C.gold : isGood ? C.green : C.red
+    trendLabel = dir === 'estable'
+      ? 'Tendencia: estable'
+      : `Tendencia: ${dir} ${abs} kg/semana`
+  }
+
+  // Merge peso + trend into one dataset for recharts
+  const weightChartData = last30Weight.map((d, i) => ({
+    day: d.day, peso: d.peso,
+    trend: (reg && weightPoints.length >= 3) ? parseFloat((reg.slope * d.x + reg.intercept).toFixed(2)) : undefined,
+    isToday: d.isToday,
+  }))
 
   const wEntries = Object.entries(weights).sort()
   const mStartKey = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
@@ -1007,22 +1179,40 @@ function TabProgreso({ profile, foods: todayFoods, water: todayWater, weights, s
         </div>
       </Panel>
 
-      {weightData.length > 0 && (
+      {weightPoints.length > 0 && (
         <Panel>
-          <SectionTitle>PESO · ÚLTIMOS 7 DÍAS</SectionTitle>
-          <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={weightData} margin={{ top: 14, right: 10, left: -20, bottom: 0 }}>
+          <SectionTitle>PESO · ÚLTIMOS 30 DÍAS</SectionTitle>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={weightChartData} margin={{ top: 14, right: 10, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={C.stone} />
-              <XAxis dataKey="day" tick={{ fill: '#777', fontSize: 11 }} />
-              <YAxis tick={{ fill: '#777', fontSize: 11 }} domain={['auto', 'auto']} />
-              <Tooltip {...ttStyle} />
-              <Line type="monotone" dataKey="peso" stroke={C.gold} strokeWidth={2}
-                dot={{ fill: C.gold, r: 4, stroke: C.gold }} label={{ position: 'top', fill: C.gold, fontSize: 10 }} />
+              <XAxis dataKey="day" tick={{ fill: '#777', fontSize: 10 }} interval={4} />
+              <YAxis tick={{ fill: '#777', fontSize: 10 }} domain={['auto', 'auto']} width={38} />
+              <Tooltip {...ttStyle} formatter={(v, name) => [v ? `${v} kg` : '—', name === 'peso' ? 'Peso' : 'Tendencia']} />
+              {/* Trend line (behind) */}
+              {reg && weightPoints.length >= 3 && (
+                <Line type="linear" dataKey="trend" stroke={trendColor} strokeWidth={1.5}
+                  strokeDasharray="5 3" dot={false} connectNulls />
+              )}
+              {/* Actual weights */}
+              <Line type="monotone" dataKey="peso" stroke={C.gold} strokeWidth={2} connectNulls
+                dot={(props) => {
+                  const { cx, cy, payload } = props
+                  if (payload.peso == null) return null
+                  return <circle key={`dot-${cx}-${cy}`} cx={cx} cy={cy}
+                    r={payload.isToday ? 6 : 3}
+                    fill={payload.isToday ? C.gold : `${C.gold}99`}
+                    stroke={payload.isToday ? '#fff' : C.gold} strokeWidth={payload.isToday ? 2 : 0} />
+                }} />
             </LineChart>
           </ResponsiveContainer>
-          {monthlyChange && (
-            <div style={{ marginTop: 10, padding: '8px 12px', background: C.stone, borderRadius: 6, textAlign: 'center', fontFamily: 'Inter,sans-serif', fontSize: 13, color: parseFloat(monthlyChange.diff) < 0 ? C.green : parseFloat(monthlyChange.diff) > 0 ? C.red : C.gold }}>
-              Cambio mensual: {parseFloat(monthlyChange.diff) > 0 ? '+' : ''}{monthlyChange.diff} kg ({monthlyChange.pct}%)
+          {trendLabel && (
+            <div style={{ marginTop: 10, padding: '8px 12px', background: C.stone, borderRadius: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontFamily: '"Cormorant Garamond",serif', fontStyle: 'italic', fontSize: 15, color: trendColor }}>{trendLabel}</span>
+              {monthlyChange && (
+                <span style={{ fontFamily: 'Inter,sans-serif', fontSize: 12, color: parseFloat(monthlyChange.diff) < 0 ? C.green : parseFloat(monthlyChange.diff) > 0 ? C.red : C.gold }}>
+                  {parseFloat(monthlyChange.diff) > 0 ? '+' : ''}{monthlyChange.diff} kg este mes
+                </span>
+              )}
             </div>
           )}
         </Panel>
@@ -1123,7 +1313,85 @@ function TabProgreso({ profile, foods: todayFoods, water: todayWater, weights, s
           </div>
         )}
       </Panel>
+
+      {/* ── ARCHIVO ── */}
+      <ArchivoSection weights={weights} goal={goal} todayFoods={todayFoods} todayStr={todayStr} />
     </div>
+  )
+}
+
+// ─── SECCIÓN ARCHIVO ──────────────────────────────────────────────────────────
+function ArchivoSection({ weights, goal, todayFoods, todayStr }) {
+  const [open, setOpen] = useState(false)
+
+  const rows = React.useMemo(() => {
+    const result = []
+    for (let i = 0; i < 180; i++) {
+      const key = new Date(Date.now() - i * 86400000).toISOString().split('T')[0]
+      const foods = key === todayStr ? todayFoods : LS.get(`oly2_foods_${key}`, [])
+      const acts = LS.get(`oly2_activities_${key}`, [])
+      const peso = weights[key] || null
+      const kcal = foods.reduce((s, f) => s + (f.kcal || 0), 0)
+      const prot = foods.reduce((s, f) => s + (f.protein || 0), 0)
+      if (kcal > 0 || peso) {
+        result.push({ fecha: key, kcal, prot, peso: peso ?? '—', actividad: acts.map(a => a.type || a.text).join(', ') || '—' })
+      }
+    }
+    return result
+  }, [weights, todayFoods, todayStr])
+
+  function exportCSV() {
+    const header = 'Fecha,Kcal,Proteína(g),Peso(kg),Actividad\n'
+    const body = rows.map(r => `${r.fecha},${r.kcal},${r.prot},${r.peso},"${r.actividad}"`).join('\n')
+    const blob = new Blob([header + body], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `olympus-historial-${todayStr}.csv`
+    document.body.appendChild(a); a.click()
+    document.body.removeChild(a); URL.revokeObjectURL(url)
+  }
+
+  return (
+    <Panel>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
+        <SectionTitle>ARCHIVO · HISTORIAL COMPLETO</SectionTitle>
+        <span style={{ color: C.gold, fontSize: 18, marginTop: -10 }}>{open ? '−' : '+'}</span>
+      </div>
+      {open && (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <span style={{ fontFamily: 'Inter,sans-serif', fontSize: 12, color: '#777' }}>{rows.length} días con datos</span>
+            <GoldBtn onClick={exportCSV} style={{ fontSize: 10, padding: '6px 12px' }}>↓ Exportar CSV</GoldBtn>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'Inter,sans-serif', fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid rgba(201,169,97,0.3)` }}>
+                  {['FECHA', 'KCAL', 'PROT', 'PESO', 'ACTIVIDAD'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '5px 6px', color: C.gold, fontFamily: 'Cinzel,serif', fontSize: 8, letterSpacing: 1, whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const pct = goal > 0 ? (r.kcal / goal) * 100 : 0
+                  const kcalColor = r.kcal === 0 ? '#555' : pct >= 90 && pct <= 110 ? C.green : pct >= 70 ? C.gold : C.red
+                  return (
+                    <tr key={r.fecha} style={{ borderBottom: '1px solid rgba(201,169,97,0.07)', background: i % 2 === 0 ? 'transparent' : 'rgba(201,169,97,0.02)' }}>
+                      <td style={{ padding: '5px 6px', color: r.fecha === todayStr ? C.gold : '#888', whiteSpace: 'nowrap' }}>{r.fecha}</td>
+                      <td style={{ padding: '5px 6px', color: kcalColor, fontWeight: 600 }}>{r.kcal || '—'}</td>
+                      <td style={{ padding: '5px 6px', color: '#aaa' }}>{r.prot ? `${r.prot}g` : '—'}</td>
+                      <td style={{ padding: '5px 6px', color: C.marble }}>{r.peso !== '—' ? `${r.peso}kg` : '—'}</td>
+                      <td style={{ padding: '5px 6px', color: '#777', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.actividad}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Panel>
   )
 }
 
@@ -1170,6 +1438,28 @@ function ConfigOverlay({ profile, setProfile, onClose }) {
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontFamily: 'Cinzel,serif', fontSize: 10, color: C.gold, letterSpacing: 1, marginBottom: 4 }}>Meta de sueño: {form.sleepGoal}h</div>
             <input type="range" min="6" max="10" value={form.sleepGoal} onChange={e => f('sleepGoal', +e.target.value)} style={{ width: '100%' }} />
+          </div>
+
+          <div style={{ fontFamily: 'Cinzel,serif', fontSize: 10, color: C.gold, letterSpacing: 2, marginTop: 16, marginBottom: 12, paddingBottom: 6, borderBottom: `1px solid ${C.stone}` }}>APARIENCIA</div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontFamily: 'Cinzel,serif', fontSize: 10, color: C.gold, letterSpacing: 1, marginBottom: 8 }}>MODO DE VISUALIZACIÓN</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[{ v: 'normal', label: 'Normal' }, { v: 'obsidiana', label: 'Obsidiana' }].map(opt => (
+                <button key={opt.v} onClick={() => f('theme', opt.v)}
+                  style={{ flex: 1, padding: '9px 0', borderRadius: 6, fontFamily: 'Cinzel,serif', fontSize: 11, letterSpacing: 1, cursor: 'pointer', transition: 'all 0.2s',
+                    background: form.theme === opt.v ? C.gold : 'transparent',
+                    color: form.theme === opt.v ? C.black : C.marble,
+                    border: `1px solid ${form.theme === opt.v ? C.gold : 'rgba(201,169,97,0.3)'}`,
+                  }}>
+                  {opt.v === 'obsidiana' ? '◼ ' : '◻ '}{opt.label}
+                </button>
+              ))}
+            </div>
+            {form.theme === 'obsidiana' && (
+              <div style={{ marginTop: 8, fontFamily: '"Cormorant Garamond",serif', fontStyle: 'italic', fontSize: 13, color: '#777' }}>
+                Fondo #030202 · negro puro · sin gradientes
+              </div>
+            )}
           </div>
 
           <div style={{ background: C.stone, borderRadius: 8, padding: 14, marginBottom: 16 }}>
@@ -1318,6 +1608,11 @@ export default function App() {
   const [tab, setTab] = useState('hoy')
   const [overlay, setOverlay] = useState(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [newAchievement, setNewAchievement] = useState(null)
+  const [streak, setStreak] = useState(0)
+
+  const obs = profile.theme === 'obsidiana'
+  const bg = obs ? CO.black : C.black
 
   const dk = today()
   const [foods, setFoods] = useState(() => LS.get(`oly2_foods_${dk}`, []))
@@ -1334,12 +1629,46 @@ export default function App() {
   useEffect(() => { LS.set('oly2_weights', weights) }, [weights])
   useEffect(() => { LS.set('oly2_sessions', sessions) }, [sessions])
 
+  // Body background follows theme
+  useEffect(() => { document.body.style.background = bg }, [bg])
+
+  // Push notifications setup
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+    }
+    const id = setupNotificationScheduler()
+    return () => clearInterval(id)
+  }, [])
+
+  // Streak + achievements check
+  useEffect(() => {
+    const s = calcStreak()
+    setStreak(s)
+    const protGoal = Math.round(profile.weight * 2.2)
+    const protStreak = calcProtStreak(protGoal)
+    const weightDaysCount = Object.keys(weights).length
+    const current = evaluateAchievements({ streak: s, protStreak, sessionsCount: sessions.length, weightDaysCount })
+    const prev = LS.get('oly2_achievements', {})
+    // Check for newly unlocked
+    ACHIEVEMENTS_DEF.forEach(def => {
+      if (current[def.id] && !prev[def.id]) {
+        setNewAchievement(def)
+      }
+    })
+    LS.set('oly2_achievements', current)
+  }, [foods, sessions, weights, profile.weight]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const goal = calGoal(profile)
   const totalKcal = foods.reduce((s, f) => s + (f.kcal || 0), 0)
   const trainingDay = getTrainingDay(profile.split, profile.daysPerWeek)
   const rituals = LS.get('oly2_rituals', [])
   const checks = LS.get(`oly2_rituals_check_${dk}`, {})
   const ritualsDone = rituals.filter(r => checks[r.id]).length
+  const unlockedAchievements = LS.get('oly2_achievements', {})
 
   const TABS = [
     { id: 'hoy', icon: '⚡', label: 'HOY' },
@@ -1348,98 +1677,110 @@ export default function App() {
     { id: 'progreso', icon: '◐', label: 'PROGRESO' },
   ]
 
+  const headerStats = [
+    { label: 'MASA',    value: `${profile.weight}kg` },
+    { label: 'FASE',    value: profile.phase.split(' ')[0].toUpperCase() },
+    { label: 'RITUAL',  value: `${ritualsDone}/${rituals.length || 0}` },
+    { label: 'RACHA',   value: streak > 0 ? `🔥${streak}` : '—' },
+  ]
+
   return (
-    <div style={{ background: C.black, minHeight: '100vh', color: C.marble, fontFamily: 'Inter,sans-serif', paddingBottom: 80, position: 'relative' }}>
-      {/* ── DECORATIVE FIGURES ── */}
-      <AtlasFigure />
-      <BustFigure />
+    <ThemeCtx.Provider value={obs}>
+      <div style={{ background: bg, minHeight: '100vh', color: C.marble, fontFamily: 'Inter,sans-serif', paddingBottom: 80, position: 'relative' }}>
+        {/* ── DECORATIVE FIGURES ── */}
+        <AtlasFigure />
+        <BustFigure />
 
-      <div style={{ maxWidth: 480, margin: '0 auto', position: 'relative', zIndex: 1 }}>
+        <div style={{ maxWidth: 480, margin: '0 auto', position: 'relative', zIndex: 1 }}>
 
-        {/* ══════════════ HEADER v1 STYLE ══════════════ */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 100, background: C.black, borderBottom: `1px solid rgba(201,169,97,0.15)` }}>
+          {/* ══════════════ HEADER ══════════════ */}
+          <div style={{ position: 'sticky', top: 0, zIndex: 100, background: bg, borderBottom: `1px solid rgba(201,169,97,0.15)` }}>
 
-          {/* Gear button top-right */}
-          <div style={{ position: 'absolute', top: 14, right: 16, zIndex: 10 }}>
-            <button onClick={() => setMenuOpen(p => !p)}
-              style={{ background: C.stone, border: `1px solid rgba(201,169,97,0.3)`, borderRadius: 8, padding: '8px 11px', cursor: 'pointer', fontSize: 15, color: C.marble }}>
-              ⚙️
-            </button>
-            {menuOpen && (
-              <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 4px)', background: C.panel, border: `1px solid rgba(201,169,97,0.3)`, borderRadius: 8, overflow: 'hidden', minWidth: 170, zIndex: 200, boxShadow: '0 8px 28px #00000099' }}>
-                {[{ id: 'config', icon: '⚙', label: 'Configuración' }, { id: 'rituales', icon: '◎', label: 'Rituales' }, { id: 'instrucciones', icon: '?', label: 'Instrucciones' }].map(item => (
-                  <button key={item.id} onClick={() => { setOverlay(item.id); setMenuOpen(false) }}
-                    style={{ display: 'block', width: '100%', padding: '11px 16px', background: 'none', border: 'none', borderBottom: `1px solid ${C.stone}`, color: C.marble, cursor: 'pointer', textAlign: 'left', fontFamily: 'Cinzel,serif', fontSize: 12, letterSpacing: 1 }}>
-                    {item.icon} {item.label}
+            {/* Gear button */}
+            <div style={{ position: 'absolute', top: 14, right: 16, zIndex: 10 }}>
+              <button onClick={() => setMenuOpen(p => !p)}
+                style={{ background: C.stone, border: `1px solid rgba(201,169,97,0.3)`, borderRadius: 8, padding: '8px 11px', cursor: 'pointer', fontSize: 15, color: C.marble }}>
+                ⚙️
+              </button>
+              {menuOpen && (
+                <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 4px)', background: C.panel, border: `1px solid rgba(201,169,97,0.3)`, borderRadius: 8, overflow: 'hidden', minWidth: 170, zIndex: 200, boxShadow: '0 8px 28px #00000099' }}>
+                  {[{ id: 'config', icon: '⚙', label: 'Configuración' }, { id: 'rituales', icon: '◎', label: 'Rituales' }, { id: 'instrucciones', icon: '?', label: 'Instrucciones' }].map(item => (
+                    <button key={item.id} onClick={() => { setOverlay(item.id); setMenuOpen(false) }}
+                      style={{ display: 'block', width: '100%', padding: '11px 16px', background: 'none', border: 'none', borderBottom: `1px solid ${C.stone}`, color: C.marble, cursor: 'pointer', textAlign: 'left', fontFamily: 'Cinzel,serif', fontSize: 12, letterSpacing: 1 }}>
+                      {item.icon} {item.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ paddingTop: 18, paddingBottom: 0, textAlign: 'center' }}>
+              <div style={{ fontFamily: '"Cinzel Decorative",cursive', fontSize: '3rem', color: C.gold, letterSpacing: '0.5em', lineHeight: 1, fontWeight: 700, textShadow: obs ? 'none' : `0 0 40px rgba(201,169,97,0.3)` }}>
+                OLYMPUS
+              </div>
+              <div style={{ fontFamily: 'Cinzel,serif', fontSize: '0.65rem', color: C.gold, opacity: 0.6, letterSpacing: '0.3em', marginTop: 4, textTransform: 'uppercase' }}>
+                VIRTUS · DISCIPLINA · GLORIA
+              </div>
+              <div style={{ marginTop: 8 }}><MeanderSVG opacity={0.3} /></div>
+              <div style={{ fontFamily: '"Cormorant Garamond",serif', fontStyle: 'italic', fontSize: '2.5rem', color: C.marble, marginTop: 10, lineHeight: 1.1 }}>
+                Salve, {profile.name}
+              </div>
+              <div style={{ fontFamily: 'Cinzel,serif', fontSize: '0.62rem', color: `${C.gold}88`, letterSpacing: '0.2em', marginTop: 4, textTransform: 'uppercase' }}>
+                {fmtDate()}
+              </div>
+
+              {/* 4 stats: MASA · FASE · RITUAL · RACHA */}
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 0, marginTop: 12 }}>
+                {headerStats.map((s, i) => (
+                  <React.Fragment key={s.label}>
+                    {i > 0 && <div style={{ width: 1, background: `rgba(201,169,97,0.2)`, margin: '0 10px', alignSelf: 'stretch' }} />}
+                    <div style={{ textAlign: 'center', padding: '4px 6px' }}>
+                      <div style={{ fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, color: s.label === 'RACHA' && streak > 0 ? C.gold : C.marble }}>{s.value}</div>
+                      <div style={{ fontFamily: 'Cinzel,serif', fontSize: 7, color: C.gold, letterSpacing: 2, marginTop: 2 }}>{s.label}</div>
+                    </div>
+                  </React.Fragment>
+                ))}
+              </div>
+
+              {/* Achievements row */}
+              {ACHIEVEMENTS_DEF.some(a => unlockedAchievements[a.id]) && (
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                  {ACHIEVEMENTS_DEF.filter(a => unlockedAchievements[a.id]).map(a => (
+                    <span key={a.id} title={a.title + ': ' + a.desc} style={{ fontSize: 16, cursor: 'default', opacity: 0.85 }}>{a.icon}</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Navigation */}
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 0, marginTop: 10, borderTop: `1px solid rgba(201,169,97,0.12)` }}>
+                {TABS.map(t => (
+                  <button key={t.id} onClick={() => setTab(t.id)}
+                    style={{ flex: 1, padding: '10px 4px', background: 'none', border: 'none', cursor: 'pointer', borderBottom: tab === t.id ? `2px solid ${C.gold}` : '2px solid transparent', transition: 'border-color 0.2s' }}>
+                    <span style={{ fontFamily: 'Cinzel,serif', fontSize: 8, color: tab === t.id ? C.gold : '#555', letterSpacing: 2, textTransform: 'uppercase', display: 'block' }}>{t.label}</span>
                   </button>
                 ))}
               </div>
-            )}
-          </div>
-
-          <div style={{ paddingTop: 18, paddingBottom: 0, textAlign: 'center' }}>
-            {/* OLYMPUS logo */}
-            <div style={{ fontFamily: '"Cinzel Decorative",cursive', fontSize: '3rem', color: C.gold, letterSpacing: '0.5em', lineHeight: 1, fontWeight: 700, textShadow: `0 0 40px rgba(201,169,97,0.3)` }}>
-              OLYMPUS
-            </div>
-            {/* Subtitle */}
-            <div style={{ fontFamily: 'Cinzel,serif', fontSize: '0.65rem', color: C.gold, opacity: 0.6, letterSpacing: '0.3em', marginTop: 4, textTransform: 'uppercase' }}>
-              VIRTUS · DISCIPLINA · GLORIA
-            </div>
-            {/* Meander */}
-            <div style={{ marginTop: 8 }}>
-              <MeanderSVG opacity={0.3} />
-            </div>
-            {/* SALVE greeting */}
-            <div style={{ fontFamily: '"Cormorant Garamond",serif', fontStyle: 'italic', fontSize: '2.5rem', color: C.marble, marginTop: 10, lineHeight: 1.1 }}>
-              Salve, {profile.name}
-            </div>
-            {/* Date */}
-            <div style={{ fontFamily: 'Cinzel,serif', fontSize: '0.62rem', color: `${C.gold}88`, letterSpacing: '0.2em', marginTop: 4, textTransform: 'uppercase' }}>
-              {fmtDate()}
-            </div>
-            {/* 3 stats */}
-            <div style={{ display: 'flex', justifyContent: 'center', gap: 0, marginTop: 12, marginBottom: 0 }}>
-              {[
-                { label: 'MASA', value: `${profile.weight}kg` },
-                { label: 'FASE', value: profile.phase.split(' ')[0].toUpperCase() },
-                { label: 'RITUAL', value: `${ritualsDone}/${rituals.length || 0}` },
-              ].map((s, i) => (
-                <React.Fragment key={s.label}>
-                  {i > 0 && <div style={{ width: 1, background: `rgba(201,169,97,0.25)`, margin: '0 16px', alignSelf: 'stretch' }} />}
-                  <div style={{ textAlign: 'center', padding: '4px 8px' }}>
-                    <div style={{ fontFamily: 'Inter,sans-serif', fontSize: 16, fontWeight: 700, color: C.marble }}>{s.value}</div>
-                    <div style={{ fontFamily: 'Cinzel,serif', fontSize: 8, color: C.gold, letterSpacing: 2, marginTop: 2 }}>{s.label}</div>
-                  </div>
-                </React.Fragment>
-              ))}
-            </div>
-            {/* Navigation tabs */}
-            <div style={{ display: 'flex', justifyContent: 'center', gap: 0, marginTop: 14, borderTop: `1px solid rgba(201,169,97,0.12)` }}>
-              {TABS.map(t => (
-                <button key={t.id} onClick={() => setTab(t.id)}
-                  style={{ flex: 1, padding: '10px 4px', background: 'none', border: 'none', cursor: 'pointer', borderBottom: tab === t.id ? `2px solid ${C.gold}` : '2px solid transparent', transition: 'border-color 0.2s' }}>
-                  <span style={{ fontFamily: 'Cinzel,serif', fontSize: 8, color: tab === t.id ? C.gold : '#555', letterSpacing: 2, textTransform: 'uppercase', display: 'block' }}>{t.label}</span>
-                </button>
-              ))}
             </div>
           </div>
+
+          {/* ── CONTENT ── */}
+          <div style={{ padding: '14px 14px 0' }}>
+            {tab === 'hoy'       && <TabHoy profile={profile} foods={foods} water={water} setWater={setWater} activities={activities} setActivities={setActivities} weights={weights} setWeights={setWeights} />}
+            {tab === 'nutricion' && <TabNutricion profile={profile} foods={foods} setFoods={setFoods} />}
+            {tab === 'atleta'    && <TabAtleta profile={profile} exercises={exercises} setExercises={setExercises} sessions={sessions} setSessions={setSessions} />}
+            {tab === 'progreso'  && <TabProgreso profile={profile} foods={foods} water={water} weights={weights} sessions={sessions} />}
+          </div>
+
+          {/* ── OVERLAYS ── */}
+          {overlay === 'config'        && <ConfigOverlay profile={profile} setProfile={setProfile} onClose={() => setOverlay(null)} />}
+          {overlay === 'rituales'      && <RitualesOverlay onClose={() => setOverlay(null)} />}
+          {overlay === 'instrucciones' && <InstruccionesOverlay onClose={() => setOverlay(null)} />}
+          {menuOpen && <div onClick={() => setMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 99 }} />}
         </div>
 
-        {/* ── CONTENT ── */}
-        <div style={{ padding: '14px 14px 0' }}>
-          {tab === 'hoy'      && <TabHoy profile={profile} foods={foods} water={water} setWater={setWater} activities={activities} setActivities={setActivities} weights={weights} setWeights={setWeights} />}
-          {tab === 'nutricion' && <TabNutricion profile={profile} foods={foods} setFoods={setFoods} />}
-          {tab === 'atleta'   && <TabAtleta profile={profile} exercises={exercises} setExercises={setExercises} sessions={sessions} setSessions={setSessions} />}
-          {tab === 'progreso' && <TabProgreso profile={profile} foods={foods} water={water} weights={weights} sessions={sessions} />}
-        </div>
-
-        {/* ── OVERLAYS ── */}
-        {overlay === 'config'       && <ConfigOverlay profile={profile} setProfile={setProfile} onClose={() => setOverlay(null)} />}
-        {overlay === 'rituales'     && <RitualesOverlay onClose={() => setOverlay(null)} />}
-        {overlay === 'instrucciones' && <InstruccionesOverlay onClose={() => setOverlay(null)} />}
-        {menuOpen && <div onClick={() => setMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 99 }} />}
+        {/* ── ACHIEVEMENT TOAST ── */}
+        {newAchievement && <ToastAchievement achievement={newAchievement} onDone={() => setNewAchievement(null)} />}
       </div>
-    </div>
+    </ThemeCtx.Provider>
   )
 }
